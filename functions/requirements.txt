@@ -1,0 +1,5 @@
+google-api-python-client==2.111.0
+ipykernel==6.27.1
+lxml==4.9.4
+pip-chill==1.0.3
+seaborn==0.13.0
