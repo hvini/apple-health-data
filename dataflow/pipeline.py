@@ -1,8 +1,8 @@
-from apache_beam.options.pipeline_options import PipelineOptions
-from apache_beam.options.pipeline_options import SetupOptions
-import xml.etree.ElementTree as ET
+from apache_beam.options.pipeline_options import PipelineOptions, SetupOptions
 import apache_beam as beam
+import xmltodict
 import logging
+import os
 
 logging.basicConfig()
 
@@ -16,11 +16,8 @@ STROKE_STYLE_MAP = {
     '6': 'KickboardStrokeStyle'
 }
 
-
-def parse_stroke_style(value):
-    """Converts the stroke style value to its corresponding string."""
-
-    return STROKE_STYLE_MAP.get(value, 'UnknownStrokeStyle')
+service_account = 'dataflow/apple-health-data-409011-fdaf8a5d0ed6.json'
+os.environ['GOOGLE_APPLICATION_CREDENTIALS'] = service_account
 
 
 class AppleHealthDataPipelineOptions(PipelineOptions):
@@ -32,114 +29,150 @@ class AppleHealthDataPipelineOptions(PipelineOptions):
             "--input",
             type=str,
             help="The file to read from, e.g. gs://bucket/object",
+            default='gs://ahd_storage/exportar.xml'
         )
         parser.add_value_provider_argument(
             '--pipeline_name',
             type=str,
             help='This pipe name',
+            default='apple-health-data'
         )
 
 
-class ReadXML(beam.DoFn):
+def parse_stroke_style(value):
+    """Converts the stroke style value to its corresponding string."""
 
-    def process(self, file_path):
-
-        tree = ET.parse(file_path)
-        root = tree.getroot()
-
-        for workout in root.findall('Workout'):
-
-            if workout.get('workoutActivityType') == 'HKWorkoutActivityTypeSwimming':
-
-                yield ET.tostring(workout)
+    return STROKE_STYLE_MAP.get(value, 'UnknownStrokeStyle')
 
 
-class ParseXML(beam.DoFn):
+def parse_into_dict(filename):
 
-    def process(self, str):
+    with open(filename) as f:
 
-        element = ET.fromstring(str)
-
-        result_dict = {
-            'Duration': element.attrib.get('duration', ''),
-            'CreationDate': element.attrib.get('creationDate', ''),
-            'StartDate': element.attrib.get('startDate', ''),
-            'EndDate': element.attrib.get('endDate', '')
-        }
-
-        for parent in element:
-
-            tag = parent.tag
-            attrib_value = parent.attrib.values()
-
-            if tag == 'MetadataEntry':
-
-                if 'HKAverageMETs' in attrib_value:
-
-                    result_dict['AverageMETs'] =\
-                        parent.attrib['value'].split(' ')[0]
-
-                if 'HKWeatherTemperature' in attrib_value:
-
-                    result_dict['WeatherTemperature'] = parent.attrib['value']\
-                        .split(' ')[0]
-
-            if tag == 'WorkoutStatistics':
-
-                if 'HKQuantityTypeIdentifierDistanceSwimming' in attrib_value:
-
-                    result_dict['DistanceSwimming'] = parent.attrib['sum']
-
-                if 'HKQuantityTypeIdentifierActiveEnergyBurned' in attrib_value:
-
-                    result_dict['EnergyBurned'] = parent.attrib['sum']
-
-            if (tag == 'WorkoutEvent' and 'HKWorkoutEventTypeLap' in parent.attrib.values()):
-
-                for child in parent:
-
-                    stroke_style = parse_stroke_style(child.attrib['value'])
-                    result_dict[stroke_style] = result_dict.get(
-                        stroke_style, 0) + 1
-
-        yield result_dict
+        doc = xmltodict.parse(f.read())
+        return doc
 
 
-class FillNa(beam.DoFn):
+def fill_na(record):
 
-    def process(self, element):
+    record['WeatherTemperature'] = 0 if not 'WeatherTemperature' in record else record['WeatherTemperature']
 
-        if not 'WeatherTemperature' in element:
-            element['WeatherTemperature'] = 0
+    for stroke_style in STROKE_STYLE_MAP.values():
 
-        for stroke_style in STROKE_STYLE_MAP.values():
+        record[stroke_style] = 0 if not stroke_style in record else record[stroke_style]
 
-            if not stroke_style in element:
-                element[stroke_style] = 0
-
-        yield element
+    return record
 
 
-class CombineLines(beam.DoFn):
+def cleanup(record):
 
-    def process(self, lines):
+    result_dict = {
+        'Duration': record['@duration'],
+        'CreationDate': record['@creationDate'],
+        'StartDate': record['@startDate'],
+        'EndDate': record['@endDate']
+    }
 
-        combined_str = ''.join(lines)
-        yield combined_str
+    metadata_entry = record['MetadataEntry']
+    for entry in metadata_entry:
+
+        key = entry['@key']
+
+        if key == 'HKAverageMETs':
+
+            result_dict['AverageMETs'] = entry['@value'].split(' ')[0]
+
+        if key == 'HKWeatherTemperature':
+
+            result_dict['WeatherTemperature'] = entry['@value'].split(' ')[0]
+
+    workout_statistics = record['WorkoutStatistics']
+    for stat in workout_statistics:
+
+        type = stat['@type']
+
+        if type == 'HKQuantityTypeIdentifierDistanceSwimming':
+
+            result_dict['DistanceSwimming'] = stat['@sum']
+
+        if type == 'HKQuantityTypeIdentifierActiveEnergyBurned':
+
+            result_dict['EnergyBurned'] = stat['@sum']
+
+    workout_events = record['WorkoutEvent']
+    for event in workout_events:
+
+        type = event['@type']
+        if type == 'HKWorkoutEventTypeLap':
+
+            metadata_entry = event['MetadataEntry']
+            stroke_style = parse_stroke_style(
+                metadata_entry['@value'])
+            result_dict[stroke_style] = result_dict.get(
+                stroke_style, 0) + 1
+
+    result_dict = fill_na(result_dict)
+    return result_dict
+
+
+def filter_swimming_type(doc):
+
+    for rec in doc['HealthData']['Workout']:
+
+        if rec['@workoutActivityType'] == 'HKWorkoutActivityTypeSwimming':
+
+            yield cleanup(rec)
+
+
+def print_value(value):
+
+    logging.info(value)
+    return value
 
 
 def execute_pipeline(
-        options: AppleHealthDataPipelineOptions,
+        options: PipelineOptions,
         input_location
 ):
 
+    table_schema = {
+        'fields': [
+            {'name': 'Duration', 'type': 'STRING', 'mode': 'NULLABLE'},
+            {'name': 'CreationDate', 'type': 'STRING', 'mode': 'NULLABLE'},
+            {'name': 'StartDate', 'type': 'STRING', 'mode': 'NULLABLE'},
+            {'name': 'EndDate', 'type': 'STRING', 'mode': 'NULLABLE'},
+            {'name': 'AverageMETs', 'type': 'FLOAT', 'mode': 'NULLABLE'},
+            {'name': 'WeatherTemperature', 'type': 'FLOAT', 'mode': 'NULLABLE'},
+            {'name': 'DistanceSwimming', 'type': 'FLOAT', 'mode': 'NULLABLE'},
+            {'name': 'EnergyBurned', 'type': 'FLOAT', 'mode': 'NULLABLE'},
+            {'name': 'UnknownStrokeStyle', 'type': 'INTEGER', 'mode': 'NULLABLE'},
+            {'name': 'MixedStrokeStyle', 'type': 'INTEGER', 'mode': 'NULLABLE'},
+            {'name': 'FreestyleStrokeStyle', 'type': 'INTEGER', 'mode': 'NULLABLE'},
+            {'name': 'BackstrokeStrokeStyle', 'type': 'INTEGER', 'mode': 'NULLABLE'},
+            {'name': 'BreaststrokeStrokeStyle',
+                'type': 'INTEGER', 'mode': 'NULLABLE'},
+            {'name': 'ButterflyStrokeStyle', 'type': 'INTEGER', 'mode': 'NULLABLE'},
+            {'name': 'KickboardStrokeStyle', 'type': 'INTEGER', 'mode': 'NULLABLE'}
+        ]
+    }
+
     with beam.Pipeline(options=options) as pipeline:
 
-        data = (pipeline
-                | 'Create File Path' >> beam.Create([input_location])
-                | 'Read XML' >> beam.ParDo(ReadXML())
-                | 'Parse XML' >> beam.ParDo(ParseXML())
-                | 'Fill NA' >> beam.ParDo(FillNa()))
+        (pipeline
+         | beam.Create(['hello'])
+         | beam.Map(lambda x: logging.info(x)))
+        # (pipeline
+        #  | 'Create File' >> beam.Create([input_location])
+        #  | 'Parse XML' >> beam.Map(lambda filename: parse_into_dict(filename))
+        #  | 'Filter Swimming Type' >> beam.FlatMap(lambda doc: filter_swimming_type(doc))
+        #  | 'Print' >> beam.Map(print_value))
+        # data = data_str | 'Parse XML' >> beam.ParDo(ParseXML())
+        # filled = data | 'Fill NA' >> beam.ParDo(FillNa())
+        # filled | 'Write to BQ' >> beam.io.WriteToBigQuery(
+        #     table='apple_health_data.apple_health_data',
+        #     schema=table_schema,
+        #     write_disposition=beam.io.BigQueryDisposition.WRITE_APPEND,
+        #     create_disposition=beam.io.BigQueryDisposition.CREATE_IF_NEEDED)
 
 
 def run():
