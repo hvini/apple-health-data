@@ -6,7 +6,7 @@ PROJECT_ID = os.environ.get("PROJECT_ID")
 REGION = os.environ.get("REGION")
 TEMPLATE_LOCATION = os.environ.get("TEMPLATE_LOCATION").rstrip("/")
 SUBNETWORK = os.environ.get(
-    "SUBNETWORK", f"regions/{REGION}/subnetworks/data-subnet-01")
+    "SUBNETWORK", f"regions/{REGION}/subnetworks/default")
 MACHINE_TYPE = os.environ.get("MACHINE_TYPE", "n1-standard-4")
 
 dataflow = build("dataflow", "v1b3")
@@ -41,7 +41,7 @@ def _try_handle_pubsub_message(event, context):
 
     environment_parameters = {
         "subnetwork": SUBNETWORK,
-        "machine_type": REGION,
+        "machine_type": MACHINE_TYPE
     }
 
     request = dataflow.projects().locations().templates().launch(
