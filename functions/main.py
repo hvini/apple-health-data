@@ -7,7 +7,7 @@ REGION = os.environ.get("REGION")
 TEMPLATE_LOCATION = os.environ.get("TEMPLATE_LOCATION").rstrip("/")
 SUBNETWORK = os.environ.get(
     "SUBNETWORK", f"regions/{REGION}/subnetworks/default")
-MACHINE_TYPE = os.environ.get("MACHINE_TYPE", "n1-standard-4")
+MACHINE_TYPE = os.environ.get("MACHINE_TYPE", "n1-standard-1")
 
 dataflow = build("dataflow", "v1b3")
 
@@ -35,7 +35,6 @@ def _try_handle_pubsub_message(event, context):
     job_name = f"ingestion_{event['attributes']['bucketId']}_{event['attributes']['objectGeneration']}_{datetime.datetime.now().strftime('%Y%m%d-%H%M%S')}"
 
     job_parameters = {
-        "pipeline_name": job_name,
         "input": input_file
     }
 

@@ -1,4 +1,5 @@
 from apache_beam.options.pipeline_options import PipelineOptions, SetupOptions
+from google.cloud import storage
 import apache_beam as beam
 import xmltodict
 import logging
@@ -31,26 +32,37 @@ class AppleHealthDataPipelineOptions(PipelineOptions):
             help="The file to read from, e.g. gs://bucket/object",
             default='gs://ahd_storage/exportar.xml'
         )
-        parser.add_value_provider_argument(
-            '--pipeline_name',
-            type=str,
-            help='This pipe name',
-            default='apple-health-data'
-        )
+
+
+class InputLocation(beam.DoFn):
+
+    def process(self, input_location):
+
+        yield input_location.get()
+
+
+class ReadFileContent(beam.DoFn):
+
+    def setup(self):
+
+        self.client = storage.Client()
+
+    def process(self, input_location):
+
+        bucket_name, blob_name = input_location.replace(
+            'gs://', '').split('/', 1)
+        logging.info(f"Reading file: {blob_name}")
+        logging.info(f"From bucket: {bucket_name}")
+        bucket = self.client.get_bucket(bucket_name)
+        blob = bucket.get_blob(blob_name)
+        content = blob.download_as_string()
+        yield content
 
 
 def parse_stroke_style(value):
     """Converts the stroke style value to its corresponding string."""
 
     return STROKE_STYLE_MAP.get(value, 'UnknownStrokeStyle')
-
-
-def parse_into_dict(filename):
-
-    with open(filename) as f:
-
-        doc = xmltodict.parse(f.read())
-        return doc
 
 
 def fill_na(record):
@@ -124,12 +136,6 @@ def filter_swimming_type(doc):
             yield cleanup(rec)
 
 
-def print_value(value):
-
-    logging.info(value)
-    return value
-
-
 def execute_pipeline(
         options: PipelineOptions,
         input_location
@@ -159,29 +165,23 @@ def execute_pipeline(
     with beam.Pipeline(options=options) as pipeline:
 
         (pipeline
-         | beam.Create(['hello'])
-         | beam.Map(lambda x: logging.info(x)))
-        # (pipeline
-        #  | 'Create File' >> beam.Create([input_location])
-        #  | 'Parse XML' >> beam.Map(lambda filename: parse_into_dict(filename))
-        #  | 'Filter Swimming Type' >> beam.FlatMap(lambda doc: filter_swimming_type(doc))
-        #  | 'Print' >> beam.Map(print_value))
-        # data = data_str | 'Parse XML' >> beam.ParDo(ParseXML())
-        # filled = data | 'Fill NA' >> beam.ParDo(FillNa())
-        # filled | 'Write to BQ' >> beam.io.WriteToBigQuery(
-        #     table='apple_health_data.apple_health_data',
-        #     schema=table_schema,
-        #     write_disposition=beam.io.BigQueryDisposition.WRITE_APPEND,
-        #     create_disposition=beam.io.BigQueryDisposition.CREATE_IF_NEEDED)
+         | 'Create Input' >> beam.Create([input_location])
+         | 'Get Input' >> beam.ParDo(InputLocation())
+         | 'Read Input Content' >> beam.ParDo(ReadFileContent())
+         | 'Convert to Dict' >> beam.Map(lambda str: xmltodict.parse(str))
+         | 'Filter Swimming Type' >> beam.FlatMap(filter_swimming_type)
+         | 'Write to BQ' >> beam.io.WriteToBigQuery(
+             table='apple_health_data.workouts',
+             schema=table_schema,
+             write_disposition=beam.io.BigQueryDisposition.WRITE_APPEND,
+             create_disposition=beam.io.BigQueryDisposition.CREATE_IF_NEEDED))
 
 
 def run():
 
     pipe_options = PipelineOptions().view_as(AppleHealthDataPipelineOptions)
     pipe_options.view_as(SetupOptions).save_main_session = True
-    logging.info(f"Pipeline: {pipe_options.pipeline_name}")
     execute_pipeline(pipe_options, pipe_options.input)
-    logging.info("FINISHED.")
 
 
 if __name__ == '__main__':

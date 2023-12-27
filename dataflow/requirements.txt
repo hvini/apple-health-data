@@ -1,5 +1,5 @@
 apache-beam==2.52.0
-google-apitools==0.5.31
+google-apitools==0.5.32
 google-auth-httplib2==0.1.1
 google-cloud-aiplatform==1.38.1
 google-cloud-bigquery-storage==2.24.0
