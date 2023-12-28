@@ -1,5 +1,6 @@
 from apache_beam.options.pipeline_options import PipelineOptions, SetupOptions
 from google.cloud import storage
+from datetime import datetime
 import apache_beam as beam
 import xmltodict
 import logging
@@ -17,7 +18,7 @@ STROKE_STYLE_MAP = {
     '6': 'KickboardStrokeStyle'
 }
 
-service_account = 'dataflow/apple-health-data-409011-fdaf8a5d0ed6.json'
+service_account = 'dataflow/apple-health-data-409011-df635517e967.json'
 os.environ['GOOGLE_APPLICATION_CREDENTIALS'] = service_account
 
 
@@ -29,8 +30,7 @@ class AppleHealthDataPipelineOptions(PipelineOptions):
         parser.add_value_provider_argument(
             "--input",
             type=str,
-            help="The file to read from, e.g. gs://bucket/object",
-            default='gs://ahd_storage/exportar.xml'
+            help="The file to read from, e.g. gs://bucket/object"
         )
 
 
@@ -80,9 +80,12 @@ def cleanup(record):
 
     result_dict = {
         'Duration': record['@duration'],
-        'CreationDate': record['@creationDate'],
-        'StartDate': record['@startDate'],
-        'EndDate': record['@endDate']
+        'CreationDate': datetime.strptime(record['@creationDate'],
+                                          '%Y-%m-%d %H:%M:%S %z').strftime('%Y-%m-%d %H:%M:%S'),
+        'StartDate': datetime.strptime(record['@startDate'],
+                                       '%Y-%m-%d %H:%M:%S %z').strftime('%Y-%m-%d %H:%M:%S'),
+        'EndDate': datetime.strptime(record['@endDate'],
+                                     '%Y-%m-%d %H:%M:%S %z').strftime('%Y-%m-%d %H:%M:%S')
     }
 
     metadata_entry = record['MetadataEntry']
@@ -96,7 +99,9 @@ def cleanup(record):
 
         if key == 'HKWeatherTemperature':
 
-            result_dict['WeatherTemperature'] = entry['@value'].split(' ')[0]
+            weather_fahrenheit = entry['@value'].split(' ')[0]
+            weather_celsius = (float(weather_fahrenheit) - 32) * 5 / 9
+            result_dict['WeatherTemperature'] = weather_celsius
 
     workout_statistics = record['WorkoutStatistics']
     for stat in workout_statistics:
@@ -143,10 +148,10 @@ def execute_pipeline(
 
     table_schema = {
         'fields': [
-            {'name': 'Duration', 'type': 'STRING', 'mode': 'NULLABLE'},
-            {'name': 'CreationDate', 'type': 'STRING', 'mode': 'NULLABLE'},
-            {'name': 'StartDate', 'type': 'STRING', 'mode': 'NULLABLE'},
-            {'name': 'EndDate', 'type': 'STRING', 'mode': 'NULLABLE'},
+            {'name': 'Duration', 'type': 'FLOAT', 'mode': 'NULLABLE'},
+            {'name': 'CreationDate', 'type': 'DATETIME', 'mode': 'NULLABLE'},
+            {'name': 'StartDate', 'type': 'DATETIME', 'mode': 'NULLABLE'},
+            {'name': 'EndDate', 'type': 'DATETIME', 'mode': 'NULLABLE'},
             {'name': 'AverageMETs', 'type': 'FLOAT', 'mode': 'NULLABLE'},
             {'name': 'WeatherTemperature', 'type': 'FLOAT', 'mode': 'NULLABLE'},
             {'name': 'DistanceSwimming', 'type': 'FLOAT', 'mode': 'NULLABLE'},
