@@ -18,7 +18,9 @@ STROKE_STYLE_MAP = {
     '6': 'KickboardStrokeStyle'
 }
 
-service_account = 'dataflow/apple-health-data-409011-df635517e967.json'
+ROOT_DIR = os.path.dirname(os.path.abspath(__file__))
+service_account = os.path.join(
+    ROOT_DIR, 'apple-health-data-409011-df635517e967.json')
 os.environ['GOOGLE_APPLICATION_CREDENTIALS'] = service_account
 
 

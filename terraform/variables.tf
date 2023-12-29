@@ -1,0 +1,11 @@
+variable "gcp_project" {}
+variable "gcp_region" {}
+variable "bucket_name" {}
+variable "gcs_storage" {}
+variable "gcs_dataflow" {}
+variable "pub_sub_name" {}
+variable "lambda_name" {}
+variable "entry_point" {}
+variable "template_location" {}
+variable "bq_dataset" {}
+variable "root_dir" {}
