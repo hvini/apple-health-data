@@ -53,7 +53,7 @@ resource "google_bigquery_dataset" "dataset" {
 }
 
 resource "null_resource" "dataflow" {
-  depends_on = [google_bigquery_dataset.dataset]
+  depends_on = [google_bigquery_dataset.dataset, google_storage_bucket.gcs_dataflow_bucket]
   provisioner "local-exec" {
     command = <<EOT
       source ${var.root_dir}/dataflow/venv/bin/activate && \
